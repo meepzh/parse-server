@@ -27,7 +27,7 @@ export class UserController extends AdaptableController {
   }
 
   get shouldVerifyEmails() {
-    return this.options.verifyUserEmails;
+    return true;
   }
 
   setEmailVerifyToken(user) {
