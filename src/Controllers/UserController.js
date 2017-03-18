@@ -32,12 +32,19 @@ export class UserController extends AdaptableController {
 
   setEmailVerifyToken(user) {
     if (this.shouldVerifyEmails) {
-      user._email_verify_token = randomString(25);
-      user.emailVerified = false;
+      const query = {username: user.username};
+      const updateFields = {_email_verify_token: randomString(25), emailVerified: false};
 
       if (this.config.emailVerifyTokenValidityDuration) {
-        user._email_verify_token_expires_at = Parse._encode(this.config.generateEmailVerifyTokenExpiresAt());
+        updateFields._email_verify_token_expires_at = Parse._encode(this.config.generateEmailVerifyTokenExpiresAt());
       }
+
+      return this.config.database.update('_User', query, updateFields).then((document) => {
+        if (!document) {
+          throw undefined;
+        }
+        return Promise.resolve(document);
+      });
     }
   }
 
@@ -108,7 +115,7 @@ export class UserController extends AdaptableController {
         throw undefined;
       }
       return result.results[0];
-    })
+    });
   }
 
   sendVerificationEmail(user) {
@@ -116,24 +123,24 @@ export class UserController extends AdaptableController {
       return;
     }
 
-    this.setEmailVerifyToken(user);
-
-    const token = encodeURIComponent(user._email_verify_token);
     // We may need to fetch the user in case of update email
     this.getUserIfNeeded(user).then((user) => {
-      const username = encodeURIComponent(user.username);
+      this.setEmailVerifyToken(user).then((user) => {
+        const username = encodeURIComponent(user.username);
+        const token = encodeURIComponent(user._email_verify_token);
+        const link = buildEmailLink(this.config.verifyEmailURL, username, token, this.config);
+        const options = {
+          appName: this.config.appName,
+          link: link,
+          user: inflate('_User', user),
+        };
 
-      const link = buildEmailLink(this.config.verifyEmailURL, username, token, this.config);
-      const options = {
-        appName: this.config.appName,
-        link: link,
-        user: inflate('_User', user),
-      };
-      if (this.adapter.sendVerificationEmail) {
-        this.adapter.sendVerificationEmail(options);
-      } else {
-        this.adapter.sendMail(this.defaultVerificationEmail(options));
-      }
+        if (this.adapter.sendVerificationEmail) {
+          this.adapter.sendVerificationEmail(options);
+        } else {
+          this.adapter.sendMail(this.defaultVerificationEmail(options));
+        }
+      });
     });
   }
 
@@ -144,7 +151,7 @@ export class UserController extends AdaptableController {
       token._perishable_token_expires_at = Parse._encode(this.config.generatePasswordResetTokenExpiresAt());
     }
 
-    return this.config.database.update('_User', { $or: [{email}, {username: email, email: {$exists: false}}] }, token, {}, true)
+    return this.config.database.update('_User', { $or: [{email}, {username: email, email: {$exists: false}}] }, token, {}, true);
   }
 
   sendPasswordResetEmail(email) {
@@ -220,7 +227,7 @@ function updateUserPassword(userId, password, config) {
 }
 
 function buildEmailLink(destination, username, token, config) {
-  const usernameAndToken = `token=${token}&username=${username}`
+  const usernameAndToken = `token=${token}&username=${username}`;
 
   if (config.parseFrameURL) {
     const destinationWithoutHost = destination.replace(config.publicServerURL, '');
