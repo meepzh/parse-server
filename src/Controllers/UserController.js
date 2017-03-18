@@ -34,9 +34,12 @@ export class UserController extends AdaptableController {
     if (this.shouldVerifyEmails) {
       const query = {username: user.username};
       const updateFields = {_email_verify_token: randomString(25), emailVerified: false};
+      user._email_verify_token = updateFields._email_verify_token;
+      user.emailVerified = updateFields.emailVerified;
 
       if (this.config.emailVerifyTokenValidityDuration) {
         updateFields._email_verify_token_expires_at = Parse._encode(this.config.generateEmailVerifyTokenExpiresAt());
+        user._email_verify_token_expires_at = updateFields._email_verify_token_expires_at;
       }
 
       return this.config.database.update('_User', query, updateFields).then((document) => {
@@ -125,22 +128,21 @@ export class UserController extends AdaptableController {
 
     // We may need to fetch the user in case of update email
     this.getUserIfNeeded(user).then((user) => {
-      this.setEmailVerifyToken(user).then((user) => {
-        const username = encodeURIComponent(user.username);
-        const token = encodeURIComponent(user._email_verify_token);
-        const link = buildEmailLink(this.config.verifyEmailURL, username, token, this.config);
-        const options = {
-          appName: this.config.appName,
-          link: link,
-          user: inflate('_User', user),
-        };
+      this.setEmailVerifyToken(user);
+      const username = encodeURIComponent(user.username);
+      const token = encodeURIComponent(user._email_verify_token);
+      const link = buildEmailLink(this.config.verifyEmailURL, username, token, this.config);
+      const options = {
+        appName: this.config.appName,
+        link: link,
+        user: inflate('_User', user),
+      };
 
-        if (this.adapter.sendVerificationEmail) {
-          this.adapter.sendVerificationEmail(options);
-        } else {
-          this.adapter.sendMail(this.defaultVerificationEmail(options));
-        }
-      });
+      if (this.adapter.sendVerificationEmail) {
+        this.adapter.sendVerificationEmail(options);
+      } else {
+        this.adapter.sendMail(this.defaultVerificationEmail(options));
+      }
     });
   }
 
