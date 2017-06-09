@@ -277,9 +277,7 @@ RestWrite.prototype.findUsersWithAuthData = function(authData) {
 
 RestWrite.prototype.handleAuthData = function(authData) {
   let results;
-  return this.handleAuthDataValidation(authData).then(() => {
-    return this.findUsersWithAuthData(authData);
-  }).then((r) => {
+  return this.findUsersWithAuthData(authData).then((r) => {
     results = r;
     if (results.length > 1) {
       // More than 1 user with the passed id's
@@ -290,33 +288,39 @@ RestWrite.prototype.handleAuthData = function(authData) {
     this.storage['authProvider'] = Object.keys(authData).join(',');
 
     if (results.length > 0) {
+      const userResult = results[0];
+      const mutatedAuthData = {};
+      Object.keys(authData).forEach((provider) => {
+        const providerData = authData[provider];
+        const userAuthData = userResult.authData[provider];
+        if (!_.isEqual(providerData, userAuthData)) {
+          mutatedAuthData[provider] = providerData;
+        }
+      });
+      const hasMutatedAuthData = Object.keys(mutatedAuthData).length !== 0;
       if (!this.query) {
         // Login with auth data
         delete results[0].password;
-        const userResult = results[0];
 
         // need to set the objectId first otherwise location has trailing undefined
         this.data.objectId = userResult.objectId;
 
         // Determine if authData was updated
-        const mutatedAuthData = {};
-        Object.keys(authData).forEach((provider) => {
-          const providerData = authData[provider];
-          const userAuthData = userResult.authData[provider];
-          if (!_.isEqual(providerData, userAuthData)) {
-            mutatedAuthData[provider] = providerData;
-          }
-        });
 
         this.response = {
           response: userResult,
           location: this.location()
         };
 
+        // If we didn't change the auth data, just keep going
+        if (!hasMutatedAuthData) {
+          return;
+        }
         // We have authData that is updated on login
         // that can happen when token are refreshed,
         // We should update the token and let the user in
-        if (Object.keys(mutatedAuthData).length > 0) {
+        // We should only check the mutated keys
+        return this.handleAuthDataValidation(mutatedAuthData).then(() => {
           // Assign the new authData in the response
           Object.keys(mutatedAuthData).forEach((provider) => {
             this.response.response.authData[provider] = mutatedAuthData[provider];
@@ -324,19 +328,21 @@ RestWrite.prototype.handleAuthData = function(authData) {
           // Run the DB update directly, as 'master'
           // Just update the authData part
           return this.config.database.update(this.className, {objectId: this.data.objectId}, {authData: mutatedAuthData}, {});
-        }
-        return;
-
+        });
       } else if (this.query && this.query.objectId) {
         // Trying to update auth data but users
         // are different
-        if (results[0].objectId !== this.query.objectId) {
+        if (userResult.objectId !== this.query.objectId) {
           throw new Parse.Error(Parse.Error.ACCOUNT_ALREADY_LINKED,
                               'this auth is already used');
         }
+        // No auth data was mutated, just keep going
+        if (!hasMutatedAuthData) {
+          return;
+        }
       }
     }
-    return;
+    return this.handleAuthDataValidation(authData);
   });
 }
 
@@ -349,7 +355,13 @@ RestWrite.prototype.transformUser = function() {
     return promise;
   }
 
-  if (this.query) {
+  if (!this.auth.isMaster && "emailVerified" in this.data) {
+    const error = `Clients aren't allowed to manually update email verification.`
+    throw new Parse.Error(Parse.Error.OPERATION_FORBIDDEN, error);
+  }
+
+  // Do not cleanup session if objectId is not set
+  if (this.query && this.objectId()) {
     // If we're updating a _User object, we need to clear out the cache for that user. Find all their
     // session tokens, and remove them from the cache.
     promise = new RestQuery(this.config, Auth.master(this.config), '_Session', {
@@ -370,9 +382,12 @@ RestWrite.prototype.transformUser = function() {
       return Promise.resolve();
     }
 
-    if (this.query && !this.auth.isMaster) {
+    if (this.query) {
       this.storage['clearSessions'] = true;
-      this.storage['generateNewSession'] = true;
+      // Generate a new session only if the user requested
+      if (!this.auth.isMaster) {
+        this.storage['generateNewSession'] = true;
+      }
     }
 
     return this._validatePasswordPolicy().then(() => {
@@ -793,7 +808,15 @@ RestWrite.prototype.handleInstallation = function() {
         if (this.data.appIdentifier) {
           delQuery['appIdentifier'] = this.data.appIdentifier;
         }
-        this.config.database.destroy('_Installation', delQuery);
+        this.config.database.destroy('_Installation', delQuery)
+          .catch(err => {
+            if (err.code == Parse.Error.OBJECT_NOT_FOUND) {
+              // no deletions were made. Can be ignored.
+              return;
+            }
+            // rethrow the error
+            throw err;
+          });
         return;
       }
     } else {
@@ -806,6 +829,14 @@ RestWrite.prototype.handleInstallation = function() {
         return this.config.database.destroy('_Installation', delQuery)
           .then(() => {
             return deviceTokenMatches[0]['objectId'];
+          })
+          .catch(err => {
+            if (err.code == Parse.Error.OBJECT_NOT_FOUND) {
+              // no deletions were made. Can be ignored
+              return;
+            }
+            // rethrow the error
+            throw err;
           });
       } else {
         if (this.data.deviceToken &&
@@ -835,7 +866,15 @@ RestWrite.prototype.handleInstallation = function() {
           if (this.data.appIdentifier) {
             delQuery['appIdentifier'] = this.data.appIdentifier;
           }
-          this.config.database.destroy('_Installation', delQuery);
+          this.config.database.destroy('_Installation', delQuery)
+            .catch(err => {
+              if (err.code == Parse.Error.OBJECT_NOT_FOUND) {
+                // no deletions were made. Can be ignored.
+                return;
+              }
+              // rethrow the error
+              throw err;
+            });
         }
         // In non-merge scenarios, just return the installation match id
         return idMatch.objectId;
